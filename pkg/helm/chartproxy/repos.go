@@ -25,8 +25,14 @@ import (
 
 	"github.com/openshift/library-go/pkg/crypto"
 
+	"github.com/openshift/console/pkg/helm/allowlist"
 	"github.com/openshift/console/pkg/utils"
 )
+
+// resolveHost is a package-level indirection so tests can stub DNS resolution.
+var resolveHost = func(ctx context.Context, host string) ([]string, error) {
+	return net.DefaultResolver.LookupHost(ctx, host)
+}
 
 var (
 	helmChartRepositoryClusterGVK = schema.GroupVersionResource{
@@ -71,21 +77,45 @@ func validateRepoURL(u *url.URL, isClusterScoped bool) error {
 
 	if !isClusterScoped {
 		host := u.Hostname()
+		al := allowlist.Current()
+		if allowlist.IsClusterInternalHost(host) && !al.AllowsHost(host) {
+			return fmt.Errorf("repository URL %q must not target cluster-internal services", u.Redacted())
+		}
 		if ip := net.ParseIP(host); ip != nil {
-			if utils.IsPrivateOrReservedIP(ip) {
+			if err := privateTargetError(host, []string{ip.String()}); err != nil {
 				return fmt.Errorf("repository URL %q resolves to a private or reserved address", u.Redacted())
 			}
 			return nil
 		}
-		addrs, err := net.LookupHost(host)
+		addrs, err := resolveHost(context.Background(), host)
 		if err != nil {
 			return fmt.Errorf("failed to resolve repository host %q: %v", host, err)
 		}
-		for _, addr := range addrs {
-			if utils.IsPrivateOrReservedAddr(addr) {
-				return fmt.Errorf("repository URL %q resolves to a private or reserved address", u.Redacted())
-			}
+		if err := privateTargetError(host, addrs); err != nil {
+			return fmt.Errorf("repository URL %q resolves to a private or reserved address", u.Redacted())
 		}
+	}
+	return nil
+}
+
+// privateTargetError reports why a namespace-scoped Helm target must be
+// rejected. An empty address list checks only the hostname. Approved CIDRs
+// and hosts come from allowlist.Current. Link-local, loopback, and unspecified
+// addresses are never approved.
+func privateTargetError(host string, addrs []string) error {
+	al := allowlist.Current()
+	if allowlist.IsClusterInternalHost(host) && !al.AllowsHost(host) {
+		return fmt.Errorf("must not target cluster-internal services")
+	}
+	for _, addr := range addrs {
+		ip := net.ParseIP(addr)
+		if ip == nil || !utils.IsPrivateOrReservedIP(ip) {
+			continue
+		}
+		if al.Permits(host, ip) {
+			continue
+		}
+		return fmt.Errorf("connection to private or reserved address %s is not allowed", addr)
 	}
 	return nil
 }
@@ -96,14 +126,15 @@ func ssrfSafeDialContext(base *net.Dialer) func(ctx context.Context, network, ad
 		if err != nil {
 			return nil, err
 		}
-		addrs, err := net.DefaultResolver.LookupHost(ctx, host)
+		addrs, err := resolveHost(ctx, host)
 		if err != nil {
 			return nil, err
 		}
-		for _, a := range addrs {
-			if utils.IsPrivateOrReservedAddr(a) {
-				return nil, fmt.Errorf("connection to private or reserved address %s is not allowed", a)
-			}
+		if err := privateTargetError(host, addrs); err != nil {
+			return nil, err
+		}
+		if len(addrs) == 0 {
+			return nil, fmt.Errorf("no addresses found for %s", host)
 		}
 		return base.DialContext(ctx, network, net.JoinHostPort(addrs[0], port))
 	}

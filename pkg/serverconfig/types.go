@@ -269,6 +269,15 @@ type HelmChartRepo struct {
 	CAFile string `yaml:"caFile,omitempty"`
 }
 
+// HelmProjectRepoAllowlist approves internal registries for namespace-scoped
+// ProjectHelmChartRepository resources. Link-local, loopback, and unspecified
+// addresses stay blocked. Keep this struct aligned with console-operator.
+type HelmProjectRepoAllowlist struct {
+	CIDRs []string `yaml:"cidrs,omitempty"`
+	Hosts []string `yaml:"hosts,omitempty"`
+}
+
 type Helm struct {
-	ChartRepo HelmChartRepo `yaml:"chartRepository"`
+	ChartRepo                  HelmChartRepo            `yaml:"chartRepository"`
+	ProjectRepositoryAllowlist HelmProjectRepoAllowlist `yaml:"projectRepositoryAllowlist,omitempty"`
 }

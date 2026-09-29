@@ -1,6 +1,7 @@
 package chartproxy
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -23,6 +24,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	"github.com/openshift/console/pkg/helm/actions/fake"
+	"github.com/openshift/console/pkg/helm/allowlist"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -50,6 +52,8 @@ func TestValidateRepoURL(t *testing.T) {
 		isClusterScope bool
 		wantErr        bool
 		errContains    string
+		allowCIDRs     []string
+		allowHosts     []string
 	}{
 		{
 			name:    "valid public HTTPS URL with IP",
@@ -146,9 +150,36 @@ func TestValidateRepoURL(t *testing.T) {
 			wantErr:        true,
 			errContains:    "unsupported URL scheme",
 		},
+		{
+			name:       "allows RFC1918 when CIDR is approved",
+			rawURL:     "http://10.0.0.5:8080/charts",
+			allowCIDRs: []string{"10.0.0.0/8"},
+			wantErr:    false,
+		},
+		{
+			name:        "rejects metadata when only RFC1918 is approved",
+			rawURL:      "http://169.254.169.254/latest/meta-data/",
+			allowCIDRs:  []string{"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16"},
+			wantErr:     true,
+			errContains: "private or reserved address",
+		},
+		{
+			name:        "rejects cluster-internal host even when its range is approved",
+			rawURL:      "http://chartmuseum.artifactory.svc.cluster.local/charts",
+			allowCIDRs:  []string{"10.0.0.0/8"},
+			wantErr:     true,
+			errContains: "cluster-internal",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			allowlist.TestingReset()
+			t.Cleanup(allowlist.TestingReset)
+			if len(tt.allowCIDRs) > 0 || len(tt.allowHosts) > 0 {
+				approved, parseErr := allowlist.Parse(tt.allowCIDRs, tt.allowHosts)
+				require.NoError(t, parseErr)
+				allowlist.SetStatic(approved)
+			}
 			u, err := url.Parse(tt.rawURL)
 			require.NoError(t, err)
 			err = validateRepoURL(u, tt.isClusterScope)
@@ -162,6 +193,29 @@ func TestValidateRepoURL(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestValidateRepoURLApprovedHost(t *testing.T) {
+	orig := resolveHost
+	resolveHost = func(context.Context, string) ([]string, error) {
+		return []string{"10.2.3.4"}, nil
+	}
+	t.Cleanup(func() { resolveHost = orig })
+
+	allowlist.TestingReset()
+	t.Cleanup(allowlist.TestingReset)
+	approved, err := allowlist.Parse(nil, []string{"harbor.internal.example.com"})
+	require.NoError(t, err)
+	allowlist.SetStatic(approved)
+
+	u, err := url.Parse("https://harbor.internal.example.com/charts")
+	require.NoError(t, err)
+	require.NoError(t, validateRepoURL(u, false))
+
+	blocked, err := url.Parse("https://other.internal.example.com/charts")
+	require.NoError(t, err)
+	err = validateRepoURL(blocked, false)
+	require.ErrorContains(t, err, "private or reserved address")
 }
 
 func noopURLValidator(_ *url.URL, _ bool) error { return nil }

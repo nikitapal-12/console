@@ -25,6 +25,7 @@ import (
 	"github.com/openshift/console/pkg/auth"
 	"github.com/openshift/console/pkg/controllers"
 	"github.com/openshift/console/pkg/flags"
+	"github.com/openshift/console/pkg/helm/allowlist"
 	"github.com/openshift/console/pkg/knative"
 	"github.com/openshift/console/pkg/olm"
 	"github.com/openshift/console/pkg/proxy"
@@ -180,6 +181,8 @@ func main() {
 	fCopiedCSVsDisabled := fs.Bool("copied-csvs-disabled", false, "Flag to indicate if OLM copied CSVs are disabled.")
 	fTechPreview := fs.Bool("tech-preview", false, "Enable console Technology Preview features.")
 	fOLMLifecycleMetadata := fs.Bool("olm-lifecycle-metadata", false, "Enable OLM Operator lifecycle and compatibility features.")
+	fHelmProjectRepoAllowedCIDRs := fs.String("helm-project-repo-allowed-cidrs", "", "Comma-separated CIDRs of internal Helm registries that namespace-scoped ProjectHelmChartRepository resources may use. Link-local, loopback, and unspecified addresses stay blocked.")
+	fHelmProjectRepoAllowedHosts := fs.String("helm-project-repo-allowed-hosts", "", "Comma-separated hostnames of internal Helm registries that namespace-scoped ProjectHelmChartRepository resources may use.")
 
 	cfg, err := serverconfig.Parse(fs, os.Args[1:], "BRIDGE")
 	if err != nil {
@@ -190,6 +193,10 @@ func main() {
 	if err := serverconfig.Validate(fs); err != nil {
 		fmt.Fprintln(os.Stderr, err.Error())
 		os.Exit(1)
+	}
+
+	if err := setHelmProjectRepoAllowlist(*fHelmProjectRepoAllowedCIDRs, *fHelmProjectRepoAllowedHosts); err != nil {
+		klog.Fatalf("Invalid Helm project repository allowlist: %v", err)
 	}
 
 	if *fTechPreview {
@@ -846,4 +853,18 @@ func listen(scheme, host, certFile, keyFile, minTLSVersion string, cipherSuites 
 	}
 
 	return tls.Listen("tcp", host, tlsConfig)
+}
+
+func setHelmProjectRepoAllowlist(cidrs, hosts string) error {
+	cidrList := allowlist.Split(cidrs)
+	hostList := allowlist.Split(hosts)
+	if len(cidrList) == 0 && len(hostList) == 0 {
+		return nil
+	}
+	parsed, err := allowlist.Parse(cidrList, hostList)
+	if err != nil {
+		return err
+	}
+	allowlist.SetStatic(parsed)
+	return nil
 }

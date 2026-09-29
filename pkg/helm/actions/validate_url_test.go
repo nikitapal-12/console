@@ -4,6 +4,8 @@ import (
 	"net"
 	"strings"
 	"testing"
+
+	"github.com/openshift/console/pkg/helm/allowlist"
 )
 
 func TestValidateChartURL(t *testing.T) {
@@ -48,6 +50,8 @@ func TestValidateChartURL(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			allowlist.TestingReset()
+			t.Cleanup(allowlist.TestingReset)
 			err := validateChartURLStrict(tt.url)
 			if tt.wantErr && err == nil {
 				t.Fatalf("expected error for %q, got nil", tt.url)
@@ -59,5 +63,47 @@ func TestValidateChartURL(t *testing.T) {
 				t.Errorf("error %q does not contain hint %q", err.Error(), tt.errHint)
 			}
 		})
+	}
+}
+
+func TestValidateChartURLAllowlist(t *testing.T) {
+	orig := resolveChartHost
+	resolveChartHost = func(host string) ([]net.IP, error) {
+		switch host {
+		case "harbor.internal.example.com", "charts.svc.cluster.local":
+			return []net.IP{net.ParseIP("10.9.8.7")}, nil
+		case "mixed.example.com":
+			return []net.IP{net.ParseIP("93.184.216.34"), net.ParseIP("10.9.8.7")}, nil
+		default:
+			return nil, &net.DNSError{Err: "no such host", Name: host, IsNotFound: true}
+		}
+	}
+	t.Cleanup(func() { resolveChartHost = orig })
+	allowlist.TestingReset()
+	t.Cleanup(allowlist.TestingReset)
+
+	approved, err := allowlist.Parse([]string{"10.9.8.0/24"}, []string{"charts.svc.cluster.local"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	allowlist.SetStatic(approved)
+
+	if err := validateChartURLStrict("https://10.9.8.7/charts/app.tgz"); err != nil {
+		t.Fatalf("approved CIDR: %v", err)
+	}
+	if err := validateChartURLStrict("https://harbor.internal.example.com/charts/app.tgz"); err != nil {
+		t.Fatalf("approved resolved address: %v", err)
+	}
+	if err := validateChartURLStrict("https://mixed.example.com/charts/app.tgz"); err != nil {
+		t.Fatalf("mixed public and approved private addresses: %v", err)
+	}
+	if err := validateChartURLStrict("https://charts.svc.cluster.local/charts/app.tgz"); err != nil {
+		t.Fatalf("explicit internal host: %v", err)
+	}
+	if err := validateChartURLStrict("http://169.254.169.254/latest/meta-data/x.tgz"); err == nil {
+		t.Fatal("expected metadata address to stay blocked")
+	}
+	if err := validateChartURLStrict("https://other.svc.cluster.local/charts/app.tgz"); err == nil || !strings.Contains(err.Error(), "cluster-internal") {
+		t.Fatalf("expected unapproved internal host to stay blocked, got %v", err)
 	}
 }

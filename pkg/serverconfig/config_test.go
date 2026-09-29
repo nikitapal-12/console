@@ -366,3 +366,25 @@ func TestSetFlagsFromConfig(t *testing.T) {
 		})
 	}
 }
+
+func TestAddHelmProjectRepoAllowlist(t *testing.T) {
+	fs := flag.NewFlagSet("test", flag.ContinueOnError)
+	fs.String("helm-project-repo-allowed-cidrs", "", "")
+	fs.String("helm-project-repo-allowed-hosts", "", "")
+
+	err := addHelmConfig(fs, &Helm{
+		ProjectRepositoryAllowlist: HelmProjectRepoAllowlist{
+			CIDRs: []string{"10.0.0.0/8", "192.168.1.0/24"},
+			Hosts: []string{"charts.internal.example.com"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := fs.Lookup("helm-project-repo-allowed-cidrs").Value.String(); got != "10.0.0.0/8,192.168.1.0/24" {
+		t.Fatalf("cidrs flag = %q", got)
+	}
+	if got := fs.Lookup("helm-project-repo-allowed-hosts").Value.String(); got != "charts.internal.example.com" {
+		t.Fatalf("hosts flag = %q", got)
+	}
+}

@@ -27,6 +27,7 @@ import (
 	"github.com/openshift/console/pkg/crdschema"
 	devconsole "github.com/openshift/console/pkg/devconsole"
 	"github.com/openshift/console/pkg/devfile"
+	"github.com/openshift/console/pkg/helm/allowlist"
 	helmhandlerspkg "github.com/openshift/console/pkg/helm/handlers"
 	"github.com/openshift/console/pkg/knative"
 	"github.com/openshift/console/pkg/middleware"
@@ -252,6 +253,7 @@ func (s *Server) HTTPHandler() (http.Handler, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to set up internal k8s client: %w", err)
 	}
+	allowlist.SetCoreClient(internalProxiedK8SClient.CoreV1())
 	internalProxiedK8SRT, err := rest.TransportFor(s.InternalProxiedK8SClientConfig)
 	if err != nil {
 		return nil, fmt.Errorf("failed to set up internal k8s roundtripper: %v", err)

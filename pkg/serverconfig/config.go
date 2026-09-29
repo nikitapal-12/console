@@ -203,6 +203,12 @@ func addHelmConfig(fs *flag.FlagSet, helmConfig *Helm) (err error) {
 	if helmConfig.ChartRepo.CAFile != "" {
 		fs.Set("helm-chart-repo-ca-file", helmConfig.ChartRepo.CAFile)
 	}
+	if cidrs := helmConfig.ProjectRepositoryAllowlist.CIDRs; len(cidrs) > 0 {
+		fs.Set("helm-project-repo-allowed-cidrs", strings.Join(cidrs, ","))
+	}
+	if hosts := helmConfig.ProjectRepositoryAllowlist.Hosts; len(hosts) > 0 {
+		fs.Set("helm-project-repo-allowed-hosts", strings.Join(hosts, ","))
+	}
 	return nil
 }
 

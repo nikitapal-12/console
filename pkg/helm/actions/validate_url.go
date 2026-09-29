@@ -4,42 +4,14 @@ import (
 	"fmt"
 	"net"
 	"net/url"
-	"slices"
 	"strings"
 
+	"github.com/openshift/console/pkg/helm/allowlist"
 	"github.com/openshift/console/pkg/utils"
 )
 
 // resolveChartHost is a package-level indirection so tests can stub DNS resolution.
 var resolveChartHost = net.LookupIP
-
-// internalChartHostSuffixes and internalChartHostExact block cluster-internal
-// hostnames that do not resolve through public DNS to a routable address but are
-// nonetheless reachable from the console pod (e.g. the in-cluster API server and
-// services). Mirrors the protection applied to Helm repository URLs in the
-// chartproxy package.
-var (
-	internalChartHostSuffixes = []string{
-		".svc",
-		".svc.cluster.local",
-		".pod.cluster.local",
-	}
-	internalChartHostExact = []string{
-		"kubernetes",
-		"kubernetes.default",
-		"localhost",
-	}
-)
-
-func isInternalChartHost(hostname string) bool {
-	h := strings.ToLower(hostname)
-	if slices.Contains(internalChartHostExact, h) {
-		return true
-	}
-	return slices.ContainsFunc(internalChartHostSuffixes, func(suffix string) bool {
-		return strings.HasSuffix(h, suffix)
-	})
-}
 
 // validateChartURL guards against server-side request forgery before a
 // user-supplied chart reference is handed to Helm's LocateChart, which will
@@ -63,7 +35,8 @@ func ValidateChartURL(raw string) error {
 // cluster-internal name or resolves to a private or reserved IP address. This
 // closes the confused-deputy SSRF where an authenticated user could make the
 // console fetch cloud metadata endpoints, kubelets, or other in-cluster
-// services.
+// services. Addresses and hosts on the administrator allowlist are permitted,
+// except link-local, loopback, and unspecified addresses.
 func validateChartURLStrict(raw string) error {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -86,14 +59,15 @@ func validateChartURLStrict(raw string) error {
 		return fmt.Errorf("chart URL must have a hostname")
 	}
 
-	if isInternalChartHost(host) {
+	al := allowlist.Current()
+	if allowlist.IsClusterInternalHost(host) && !al.AllowsHost(host) {
 		return fmt.Errorf("chart URL must not target cluster-internal services")
 	}
 
 	// If the host is a literal IP, check it directly; otherwise resolve it and
-	// reject if any resolved address is private or reserved.
+	// reject if any resolved address is private or reserved and not approved.
 	if ip := net.ParseIP(host); ip != nil {
-		if utils.IsPrivateOrReservedIP(ip) {
+		if utils.IsPrivateOrReservedIP(ip) && !al.Permits(host, ip) {
 			return fmt.Errorf("chart URL must not resolve to a private or reserved IP address")
 		}
 		return nil
@@ -104,7 +78,7 @@ func validateChartURLStrict(raw string) error {
 		return fmt.Errorf("failed to resolve chart URL host %q: %v", host, err)
 	}
 	for _, ip := range ips {
-		if utils.IsPrivateOrReservedIP(ip) {
+		if utils.IsPrivateOrReservedIP(ip) && !al.Permits(host, ip) {
 			return fmt.Errorf("chart URL must not resolve to a private or reserved IP address")
 		}
 	}
